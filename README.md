@@ -1,46 +1,90 @@
-# Internet Archive CLI Bulk-Upload Script
+```markdown
+# 📚 Internet Archive CLI Bulk-Upload Script
 
-Since there is no bulk uploading option in the ia tool I made this script, it will make a tedious process easy and automatic if you choose to create a standalone script.
-This script uses your ia configuration that is stored in ~/.configure/internetarchive so you will have to login with the regular ia command before you can start using this script.
-The script also keeps a sqlite database with identifiers, paths and keeps track of files that are already uploaded so that it doesnt need to run MD5 hash everytime you start the script.
+🚀 A script to simplify and automate bulk uploads to the Internet Archive using the `ia` CLI. This script helps manage uploads efficiently by leveraging your existing `ia` configuration and tracking uploaded files with a SQLite database.
 
+## 🌟 Features
+- Automates the bulk upload process.
+- Utilizes your `ia` configuration stored at `~/.config/internetarchive`.
+- Tracks uploaded files in a SQLite database to avoid re-hashing files.
+- Option to create a standalone script for unattended uploads.
+- Verifies file integrity via MD5 hash (optional).
 
+---
 
+## 🛠️ Installation & Usage
 
-How to use
-1. Install Internet Archive CLI
+### 1️⃣ Install Internet Archive CLI and Dependencies
 
-Due to dependenice of the script this must be done via pip or python, you could also install it via other means as long as you have the pip or python version.
+**Using `pip`:**
+```bash
+pip install internetarchive
+pip install tqdm
+```
 
+**For Debian-based systems:**
+```bash
+sudo apt install python3-internetarchive
+sudo apt install python3-tqdm
+```
 
-Run 
+---
 
-[Agnostic]
-  pip install internetarchive
-  pip install tqdm
+### 2️⃣ Configure `ia` CLI
 
-or
+Run the following command and provide your Internet Archive credentials:
+```bash
+ia configure
+```
 
-[Debian]
-  sudo apt install python3-internetarchive
-  sudo apt install python3-tqdm
+---
 
-2. Configure ia-cli
+### 3️⃣ Run the Script
 
-Run 
+Execute the script using Python:
+```bash
+python3 bulk-upload.py
+```
 
-  ia configure 
+---
 
-and enter your login and password.
+### 4️⃣ Provide Upload Details
 
-3. You can now run the python script
+The script will prompt you for the following:
 
-  python3 bulk-upload.py
+1. **Identifier Name**  
+   - If previously used, it will appear in the list.
+   - Press `0` to type a new identifier.
 
-4. Provide information
-Type the name of the identifier, if you have uploaded the identifier before it will show up in the list otherwise press 0 to type in a name.
-You will be asked for the location, if you have typed a location before it will be show again, you can just press enter if it is correct.
-You will be asked to save the script as a standalone, this means that the script can be run without user input via the python3 command,
-this is useful if you want to have a folder into which you are constantly adding files be auto uploaded by for instance adding the script to your corntab.
+2. **File Location**  
+   - Previously used paths will appear for quick selection.
+   - Press `Enter` to confirm the displayed path or provide a new one.
 
-After the script is done it will check the MD5 hash between the uploaded files and the local files, this is very slow and you can exit with Ctrl+C if this is not of interest to you.
+3. **Standalone Script Creation**  
+   - Optionally save the script as a standalone file for automated uploads.
+   - Perfect for auto-uploads (e.g., adding it to your `crontab`).
+
+---
+
+## ❗ Notes
+- After uploads are complete, the script verifies MD5 hashes between local and uploaded files.  
+  ⏳ **This can be slow** — you may cancel with `Ctrl+C` if not needed.
+
+- Ensure you log in via `ia configure` before using the script.
+
+---
+
+### ❤️ Contributions
+Contributions and feedback are welcome! Fork, star 🌟, and submit your PRs to help improve this project.
+
+---
+
+## 📝 License
+This script is provided "as is" without warranty of any kind. Use at your own risk.
+
+---
+
+### 🤝 Support
+If you find this script useful, consider sharing it with others! 🙌
+```
+
