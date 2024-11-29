@@ -7,7 +7,7 @@ The script also keeps a sqlite database with identifiers, paths and keeps track 
 
 
 
-*How to use
+How to use
 1. Install Internet Archive CLI
 
 Due to dependenice of the script this must be done via pip or python, you could also install it via other means as long as you have the pip or python version.
@@ -16,26 +16,26 @@ Due to dependenice of the script this must be done via pip or python, you could 
 Run 
 
 [Agnostic]
-**pip install internetarchive
-**pip install tqdm
+  pip install internetarchive
+  pip install tqdm
 
 or
 
 [Debian]
-**sudo apt install python3-internetarchive
-**sudo apt install python3-tqdm
+  sudo apt install python3-internetarchive
+  sudo apt install python3-tqdm
 
 2. Configure ia-cli
 
 Run 
 
-**ia configure 
+  ia configure 
 
 and enter your login and password.
 
 3. You can now run the python script
 
-python3 bulk-upload.py
+  python3 bulk-upload.py
 
 4. Provide information
 Type the name of the identifier, if you have uploaded the identifier before it will show up in the list otherwise press 0 to type in a name.
