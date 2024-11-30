@@ -100,16 +100,22 @@ def signal_handler(sig, frame):
     print("\nReceived interrupt signal. Exiting gracefully...")
     quit_flag = True
 
-class TqdmFile(object):
+class TqdmFileWithCounter(object):
     """
-    Wraps a file object and updates a tqdm progress bar as data is read.
+    Wraps a file object and updates a tqdm progress bar with a counter as data is read.
     """
-    def __init__(self, filename, desc=None, unit='B', unit_scale=True, unit_divisor=1024, max_desc_length=50):
+    def __init__(self, filename, desc=None, unit='B', unit_scale=True, unit_divisor=1024, max_desc_length=50, index=None, total_files=None):
         self.file = open(filename, 'rb')
+        self.index = index
+        self.total_files = total_files
+        # Add the counter to the description
+        if index is not None and total_files is not None:
+            counter = f"({index}/{total_files}) "
+            desc = f"{counter}{desc}" if desc else counter
         # Truncate description if too long
         if desc and len(desc) > max_desc_length:
             desc = desc[:max_desc_length-3] + '...'
-        self.tqdm = tqdm(total=os.path.getsize(filename), desc=desc, unit=unit, unit_scale=unit_scale, unit_divisor=unit_divisor)
+        self.tqdm = tqdm(total=os.path.getsize(filename), desc=desc, unit=unit, unit_scale=unit_scale, unit_divisor=1024)
     
     def read(self, size):
         if quit_flag:
@@ -250,7 +256,7 @@ def main(identifier=None, local_directory=None):
         # Get the item
         item = get_item(identifier)
 
-        for file_info in files_to_upload:
+        for index, file_info in enumerate(files_to_upload, start=1):
             if quit_flag:
                 print("Exiting due to user request.")
                 return
@@ -258,8 +264,13 @@ def main(identifier=None, local_directory=None):
             filepath = file_info['path']
             print(f"Uploading '{relative_path}'...")
             try:
-                # Wrap the file with TqdmFile to show progress
-                wrapped_file = TqdmFile(filepath, desc=f"Uploading {relative_path}")
+                # Wrap the file with TqdmFileWithCounter to show progress with counter
+                wrapped_file = TqdmFileWithCounter(
+                    filepath,
+                    desc=f"Uploading {relative_path}",
+                    index=index,
+                    total_files=len(files_to_upload)
+                )
                 # Use item.upload() to upload individually
                 r = item.upload(
                     files={relative_path: wrapped_file},
@@ -270,7 +281,6 @@ def main(identifier=None, local_directory=None):
                 )
                 # Check the response
                 if r[0].status_code in [200, 201]:
-                    # Upload successful; no need to print additional message
                     file_info['uploaded'] = True
                 elif r[0].status_code == 403 and 'file already exists' in r[0].text.lower():
                     print(f"File '{relative_path}' already exists on IA.")
