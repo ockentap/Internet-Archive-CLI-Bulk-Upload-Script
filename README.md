@@ -1,4 +1,3 @@
-```markdown
 # 📚 Internet Archive CLI Bulk-Upload Script
 
 🚀 A script to simplify and automate bulk uploads to the Internet Archive using the `ia` CLI. This script helps manage uploads efficiently by leveraging your existing `ia` configuration and tracking uploaded files with a SQLite database.
@@ -17,7 +16,7 @@
 ### 1️⃣ Install Internet Archive CLI and Dependencies
 
 **Using `pip`:**
-```bash
+```
 pip install internetarchive
 pip install tqdm
 ```
@@ -86,5 +85,3 @@ This script is provided "as is" without warranty of any kind. Use at your own ri
 
 ### 🤝 Support
 If you find this script useful, consider sharing it with others! 🙌
-```
-
