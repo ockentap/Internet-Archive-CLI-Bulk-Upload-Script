@@ -309,7 +309,7 @@ def main(identifier=None, local_directory=None):
         print("Exiting due to user request.")
         return
 
-    # Perform verification without prompt
+    # Perform verification with counter
     print("Verifying files on IA...")
     item = get_item(identifier)
     ia_files = {}
@@ -323,12 +323,16 @@ def main(identifier=None, local_directory=None):
         ia_files[name] = {'size': size, 'md5': md5}
 
     mismatched_files = []
-    for relative_path, file_info in local_files.items():
+    total_files = len(local_files)
+    for index, (relative_path, file_info) in enumerate(local_files.items(), start=1):
         if quit_flag:
             print("Exiting due to user request.")
             return
         filepath = file_info['path']
         local_size = file_info['size']
+        counter = f"({index}/{total_files})"
+        print(f"{counter} Verifying file: {relative_path}...")
+
         if relative_path in ia_files:
             ia_size = ia_files[relative_path]['size']
             if ia_size != local_size:
