@@ -43,6 +43,7 @@ def create_upload_log_db():
             filename TEXT,
             size INTEGER,
             uploaded INTEGER,
+            md5_hash TEXT,
             PRIMARY KEY (identifier, filename)
         )
     ''')
@@ -52,10 +53,10 @@ def create_upload_log_db():
 def update_upload_log(identifier, files_info):
     conn = sqlite3.connect(UPLOAD_LOG_DB)
     c = conn.cursor()
-    data = [(identifier, f['relative_path'], f['size'], f['uploaded']) for f in files_info]
+    data = [(identifier, f['relative_path'], f['size'], f['uploaded'], f.get('md5_hash')) for f in files_info]
     c.executemany('''
-        INSERT OR REPLACE INTO upload_log (identifier, filename, size, uploaded)
-        VALUES (?, ?, ?, ?)
+        INSERT OR REPLACE INTO upload_log (identifier, filename, size, uploaded, md5_hash)
+        VALUES (?, ?, ?, ?, ?)
     ''', data)
     conn.commit()
     conn.close()
@@ -63,11 +64,23 @@ def update_upload_log(identifier, files_info):
 def load_upload_log(identifier):
     conn = sqlite3.connect(UPLOAD_LOG_DB)
     c = conn.cursor()
-    c.execute('SELECT filename, size, uploaded FROM upload_log WHERE identifier = ?', (identifier,))
+    c.execute('SELECT filename, size, uploaded, md5_hash FROM upload_log WHERE identifier = ?', (identifier,))
     rows = c.fetchall()
     conn.close()
-    upload_log = {row[0]: {'size': row[1], 'uploaded': bool(row[2])} for row in rows}
+    upload_log = {row[0]: {
+        'size': row[1], 
+        'uploaded': bool(row[2]), 
+        'md5_hash': row[3]
+    } for row in rows}
     return upload_log
+
+def get_local_md5(filepath):
+    try:
+        with open(filepath, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    except Exception as e:
+        print(f"Error calculating MD5 for {filepath}: {e}")
+        return None
 
 def get_local_files(directory):
     local_files = {}
@@ -80,7 +93,10 @@ def get_local_files(directory):
             filepath = os.path.join(root, filename)
             relative_path = os.path.relpath(filepath, directory).replace('\\', '/')
             size = os.path.getsize(filepath)
-            local_files[relative_path] = {'path': filepath, 'size': size}
+            local_files[relative_path] = {
+                'path': filepath, 
+                'size': size
+            }
     return local_files
 
 def fetch_ia_files(identifier):
@@ -184,7 +200,7 @@ def main(identifier=None, local_directory=None):
         print(f"The directory '{local_directory}' does not exist.")
         return
 
-    # Load upload log for this identifier
+    # Validate the local directory
     if quit_flag:
         print("Exiting due to user request.")
         return
@@ -333,21 +349,29 @@ def main(identifier=None, local_directory=None):
         counter = f"({index}/{total_files})"
         print(f"{counter} Verifying file: {relative_path}...")
 
+        # Check if this file is already in the upload log
+        log_entry = upload_log.get(relative_path, {})
+        local_md5 = log_entry.get('md5_hash')
+
+        # If MD5 is not in the log, calculate it
+        if not local_md5:
+            local_md5 = get_local_md5(filepath)
+            
+            # Update the log with the new MD5 hash
+            if local_md5:
+                update_upload_log(identifier, [{
+                    'relative_path': relative_path,
+                    'size': local_size,
+                    'uploaded': log_entry.get('uploaded', False),
+                    'md5_hash': local_md5
+                }])
+
         if relative_path in ia_files:
             ia_size = ia_files[relative_path]['size']
-            if ia_size != local_size:
+            ia_md5 = ia_files[relative_path]['md5']
+            
+            if ia_size != local_size or local_md5 != ia_md5:
                 mismatched_files.append(relative_path)
-            else:
-                # Check MD5 hash
-                ia_md5 = ia_files[relative_path]['md5']
-                try:
-                    with open(filepath, "rb") as f:
-                        local_md5 = hashlib.md5(f.read()).hexdigest()
-                    if ia_md5 != local_md5:
-                        mismatched_files.append(relative_path)
-                except Exception as e:
-                    print(f"Error reading file '{relative_path}' for MD5 verification: {e}")
-                    mismatched_files.append(relative_path)
         else:
             mismatched_files.append(relative_path)
 
@@ -381,15 +405,6 @@ def create_configured_script(identifier, local_directory):
         f"{indent}identifier = '{identifier}'\n",
         f"{indent}local_directory = r'{local_directory}'\n",
     ]
-
-    # Remove the placeholder line and insert the config lines
-    script_content[placeholder_line:placeholder_line+1] = config_lines
-
-    # Save the new script
-    new_script_name = f"{identifier}.py"
-    new_script_path = os.path.join(os.path.dirname(script_path), new_script_name)
-    with open(new_script_path, 'w') as f:
-        f.writelines(script_content)
 
 if __name__ == "__main__":
     main()
