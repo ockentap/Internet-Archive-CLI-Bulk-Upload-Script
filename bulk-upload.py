@@ -159,18 +159,36 @@ def main(identifier=None, local_directory=None):
 
     # CONFIG_PLACEHOLDER
 
-    # If identifier and local_directory are provided, skip prompts
+    # If identifier and local_directory are provided via command line, skip prompts
     if identifier and local_directory:
         print(f"Using identifier: {identifier}")
         print(f"Using local directory: {local_directory}")
     else:
-        # Display menu of identifiers
-        if identifiers:
+        # If we do not have any stored identifiers, immediately prompt for a custom one
+        if not identifiers:
+            print("\nNo stored identifiers found. Please enter custom details.")
+            identifier = input("Enter the Internet Archive identifier: ").strip()
+            local_directory = input("Enter the path to the local directory to upload: ").strip()
+            
+            # Save this new identifier/path pair
+            identifiers[identifier] = local_directory
+            save_identifiers(identifiers)
+
+            # Ask if user wants to create a new script with these settings
+            create_script = input("Do you want to create a new script with these settings? (y/N): ").strip().lower()
+            if create_script == 'y':
+                create_configured_script(identifier, local_directory)
+                print(f"New script '{identifier}.py' created with preconfigured settings.")
+
+        else:
+            # We do have some identifiers, so display the menu
             print("\nSelect an identifier:")
             print("0 - Custom identifier")
             for idx, idf in enumerate(identifiers.keys(), start=1):
                 print(f"{idx} - {idf}")
+            
             choice = input("Enter your choice: ").strip()
+
             if choice == '0':
                 identifier = input("Enter the Internet Archive identifier: ").strip()
                 local_directory = input("Enter the path to the local directory to upload: ").strip()
@@ -178,8 +196,10 @@ def main(identifier=None, local_directory=None):
                 identifier = list(identifiers.keys())[int(choice) - 1]
                 default_path = identifiers[identifier]
                 print(f"Last used path for '{identifier}' is '{default_path}'")
-                local_directory = input(f"Enter the path to the local directory to upload [{default_path}]: ").strip()
-                if not local_directory:
+                local_directory_input = input(f"Enter the path to the local directory to upload [{default_path}]: ").strip()
+                if local_directory_input:
+                    local_directory = local_directory_input
+                else:
                     local_directory = default_path
             else:
                 print("Invalid choice.")
@@ -200,7 +220,6 @@ def main(identifier=None, local_directory=None):
         print(f"The directory '{local_directory}' does not exist.")
         return
 
-    # Validate the local directory
     if quit_flag:
         print("Exiting due to user request.")
         return
@@ -405,6 +424,16 @@ def create_configured_script(identifier, local_directory):
         f"{indent}identifier = '{identifier}'\n",
         f"{indent}local_directory = r'{local_directory}'\n",
     ]
+    
+    # Replace the placeholder line with original plus our config lines
+    script_content[placeholder_line] = script_content[placeholder_line].rstrip('\n') + '\n' + ''.join(config_lines)
+
+    # Write out the new script
+    new_script_name = f"{identifier}.py"
+    with open(new_script_name, 'w') as new_script:
+        new_script.writelines(script_content)
+
+    print(f"Script '{new_script_name}' created with identifier='{identifier}' and local_directory='{local_directory}'.")
 
 if __name__ == "__main__":
     main()
