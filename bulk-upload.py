@@ -84,7 +84,7 @@ def get_local_md5(filepath):
 
 def get_local_files(directory):
     local_files = {}
-    for root, dirs, files in os.walk(directory):
+    for root, dirs, files in os.walk(directory, followlinks=True):
         if quit_flag:
             return local_files
         for filename in files:
