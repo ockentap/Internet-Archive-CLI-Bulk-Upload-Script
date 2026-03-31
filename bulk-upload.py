@@ -17,6 +17,7 @@ import json
 import sqlite3
 import sys
 import signal
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -920,42 +921,78 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
 
         print(f"\n📤 [{index}/{len(files_to_upload)}] Uploading '{relative_path}'...")
 
-        try:
-            wrapped_file = TqdmFileWithCounter(
-                filepath,
-                desc=f"Uploading {relative_path}",
-                index=index,
-                total_files=len(files_to_upload)
-            )
+        # Upload with retry logic
+        max_retries = 3
+        retry_delay = 5  # seconds between retries
+        upload_success = False
 
-            r = item.upload(
-                files={relative_path: wrapped_file},
-                verbose=False,
-                retries=5,
-                checksum=False,
-                metadata=upload_metadata
-            )
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Add delay between uploads to respect rate limits
+                if index > 1:
+                    time.sleep(1)
 
-            if r and r[0] and r[0].status_code in [200, 201]:
-                file_info['uploaded'] = True
-                print(f"   ✅ Upload successful")
-            elif r and r[0] and r[0].status_code == 403 and 'already exists' in r[0].text.lower():
-                file_info['uploaded'] = True
-                print(f"   ℹ️  File already exists on IA")
-            else:
-                status = r[0].status_code if r and r[0] else 'N/A'
-                print(f"   ❌ Failed (HTTP {status})")
-                file_info['uploaded'] = False
+                wrapped_file = TqdmFileWithCounter(
+                    filepath,
+                    desc=f"Uploading {relative_path}",
+                    index=index,
+                    total_files=len(files_to_upload)
+                )
 
-        except KeyboardInterrupt:
-            print("\n⚠️  Upload interrupted by user.")
-            break
-        except Exception as e:
-            print(f"   ❌ Error: {e}")
-            file_info['uploaded'] = False
-        finally:
-            if 'wrapped_file' in locals():
-                wrapped_file.close()
+                r = item.upload(
+                    files={relative_path: wrapped_file},
+                    verbose=False,
+                    retries=5,
+                    checksum=False,
+                    metadata=upload_metadata
+                )
+
+                if r and r[0] and r[0].status_code in [200, 201]:
+                    file_info['uploaded'] = True
+                    print(f"   ✅ Upload successful")
+                    upload_success = True
+                    break
+                elif r and r[0] and r[0].status_code == 403 and 'already exists' in r[0].text.lower():
+                    file_info['uploaded'] = True
+                    print(f"   ℹ️  File already exists on IA")
+                    upload_success = True
+                    break
+                else:
+                    status = r[0].status_code if r and r[0] else 'N/A'
+                    print(f"   ⚠️  Attempt {attempt}/{max_retries} failed (HTTP {status})")
+                    if attempt < max_retries:
+                        print(f"   ⏳ Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                    else:
+                        print(f"   ❌ Failed after {max_retries} attempts")
+                        file_info['uploaded'] = False
+
+            except KeyboardInterrupt:
+                print("\n⚠️  Upload interrupted by user.")
+                if 'wrapped_file' in locals():
+                    wrapped_file.close()
+                raise
+            except Exception as e:
+                error_msg = str(e)
+                if 'rate' in error_msg.lower() or 'overload' in error_msg.lower() or 'SlowDown' in error_msg.lower():
+                    print(f"   ⚠️  Rate limit hit - attempt {attempt}/{max_retries}")
+                    if attempt < max_retries:
+                        print(f"   ⏳ Waiting {retry_delay} seconds before retry...")
+                        time.sleep(retry_delay)
+                    else:
+                        print(f"   ❌ Skipping file after {max_retries} attempts")
+                        file_info['uploaded'] = False
+                else:
+                    print(f"   ❌ Error: {e}")
+                    if attempt < max_retries:
+                        print(f"   ⏳ Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                    else:
+                        print(f"   ❌ Skipping file after {max_retries} attempts")
+                        file_info['uploaded'] = False
+            finally:
+                if 'wrapped_file' in locals():
+                    wrapped_file.close()
 
         # Update log after each file
         update_upload_log(identifier, [file_info])
