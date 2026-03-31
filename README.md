@@ -357,21 +357,17 @@ Internet-Archive-CLI-Bulk-Upload-Script/
 ├── bulk-upload.py          # Main interactive script (v3.3+)
 ├── vendor/                 # Bundled dependencies (~11MB)
 ├── requirements.txt        # Dependencies list
-├── README.md              # This file
-├── TODO.md                # Planned improvements
-└── .gitignore             # Git ignore rules
+└── README.md              # This file
 ```
 
 ### Repository Files
 
-| File | Purpose | In Git? |
-|------|---------|---------|
-| `bulk-upload.py` | Main interactive script | ✅ Yes |
-| `vendor/` | Bundled Python packages | ❌ No (large, can reinstall) |
-| `requirements.txt` | Dependencies list | ✅ Yes |
-| `README.md` | Documentation | ✅ Yes |
-| `TODO.md` | Planned features | ✅ Yes |
-| `.gitignore` | Git ignore rules | ✅ Yes |
+| File | Purpose |
+|------|---------|
+| `bulk-upload.py` | Main interactive script |
+| `vendor/` | Bundled Python packages |
+| `requirements.txt` | Dependencies list |
+| `README.md` | Documentation |
 
 ### User Data (Not in Repository)
 
@@ -544,7 +540,6 @@ python3 -m pip install --target=vendor questionary internetarchive tqdm
 - 📊 Enhanced progress tracking with statistics
 - 🔒 Symlink loop protection
 - 💾 Better error handling and user feedback
-- 🗑️ Moved legacy versions to `legacy/` folder
 
 ### v2.0 (Previous)
 - Added ncurses-based UI (now deprecated)
