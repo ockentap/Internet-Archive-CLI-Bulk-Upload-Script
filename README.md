@@ -39,7 +39,7 @@ That's it! The script includes everything needed:
 
 ### 🔧 Core Features
 - Automates the bulk upload process
-- Uses your `ia` configuration (cross-platform paths)
+- Uses your `ia` configuration (same location as `ia` CLI)
 - Tracks uploaded files in a SQLite database to avoid re-uploading
 - Creates standalone scripts for unattended uploads
 - Verifies file integrity via MD5 hash comparison
@@ -47,7 +47,6 @@ That's it! The script includes everything needed:
 - Follows symbolic links (with loop protection)
 - Validates Internet Archive identifier format
 - Uploads metadata (title, description, creator, tags) with files
-- 🖥️ **Cross-platform support** - Works on Linux, macOS, and Windows
 
 ---
 
@@ -61,7 +60,6 @@ That's it! The script includes everything needed:
 | **internetarchive** (Python lib) | ✅ | ✅ Yes | Bundled in `vendor/` |
 | **questionary** | ✅ | ✅ Yes | Bundled in `vendor/` |
 | **tqdm** | ✅ | ✅ Yes | Bundled in `vendor/` |
-| **platformdirs** | ✅ | ✅ Yes | Bundled in `vendor/` (cross-platform paths) |
 | **ia CLI** | ❌ | ⚠️ One-time | Only needed for `ia configure` |
 
 ### Summary
@@ -80,7 +78,6 @@ The `vendor/` directory includes all Python dependencies (~11MB):
 - `questionary` + `prompt_toolkit` - Interactive menus
 - `tqdm` - Progress bars
 - `requests` + `urllib3` - HTTP client
-- `platformdirs` - Cross-platform config paths
 - Plus all sub-dependencies
 
 **No need to install Python packages!** Just run the script.
@@ -374,21 +371,18 @@ Internet-Archive-CLI-Bulk-Upload-Script/
 
 ### User Data (Not in Repository)
 
-These files are created in your system's config directory during use:
+These files are stored in the same location as the `ia` CLI configuration:
 
-**Config Directory Location:**
-| OS | Path |
-|----|------|
-| **Linux** | `~/.config/internetarchive/` |
-| **macOS** | `~/Library/Application Support/internetarchive/` |
-| **Windows** | `C:\Users\<user>\AppData\Local\Internet Archive Bulk Upload\` |
+**Config Directory:** `~/.config/internetarchive/` (all platforms)
 
-**Files Created:**
 | File | Purpose | In Git? |
 |------|---------|---------|
 | `identifiers.json` | Saved identifier → path mappings | ❌ No (user-specific) |
 | `metadata.json` | Metadata templates per identifier | ❌ No (user-specific) |
 | `upload_log.db` | SQLite upload tracking database | ❌ No (user-specific) |
+| `config.ini` | IA credentials (created by `ia configure`) | ❌ No (user-specific) |
+
+**Note:** Our script shares the same config directory as the `ia` CLI, so credentials and identifiers are shared between tools.
 
 ### Reinstall Dependencies
 
