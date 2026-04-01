@@ -39,9 +39,16 @@ from internetarchive import get_item
 from tqdm import tqdm
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Configuration & Identifiers
+# Cross-Platform Configuration Paths
 # ─────────────────────────────────────────────────────────────────────────────
-CONFIG_DIR = Path.home() / ".config" / "internetarchive"
+try:
+    from platformdirs import user_config_dir
+    # Use OS-appropriate config directory
+    CONFIG_DIR = Path(user_config_dir("Internet Archive Bulk Upload", "ockentap"))
+except ImportError:
+    # Fallback for systems without platformdirs
+    CONFIG_DIR = Path.home() / ".config" / "internetarchive"
+
 IDENTIFIERS_FILE = CONFIG_DIR / "identifiers.json"
 METADATA_FILE = CONFIG_DIR / "metadata.json"
 UPLOAD_LOG_DB = CONFIG_DIR / "upload_log.db"

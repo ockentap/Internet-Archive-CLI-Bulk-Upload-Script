@@ -39,7 +39,7 @@ That's it! The script includes everything needed:
 
 ### 🔧 Core Features
 - Automates the bulk upload process
-- Uses your `ia` configuration stored at `~/.config/internetarchive`
+- Uses your `ia` configuration (cross-platform paths)
 - Tracks uploaded files in a SQLite database to avoid re-uploading
 - Creates standalone scripts for unattended uploads
 - Verifies file integrity via MD5 hash comparison
@@ -47,6 +47,7 @@ That's it! The script includes everything needed:
 - Follows symbolic links (with loop protection)
 - Validates Internet Archive identifier format
 - Uploads metadata (title, description, creator, tags) with files
+- 🖥️ **Cross-platform support** - Works on Linux, macOS, and Windows
 
 ---
 
@@ -60,6 +61,7 @@ That's it! The script includes everything needed:
 | **internetarchive** (Python lib) | ✅ | ✅ Yes | Bundled in `vendor/` |
 | **questionary** | ✅ | ✅ Yes | Bundled in `vendor/` |
 | **tqdm** | ✅ | ✅ Yes | Bundled in `vendor/` |
+| **platformdirs** | ✅ | ✅ Yes | Bundled in `vendor/` (cross-platform paths) |
 | **ia CLI** | ❌ | ⚠️ One-time | Only needed for `ia configure` |
 
 ### Summary
@@ -78,6 +80,7 @@ The `vendor/` directory includes all Python dependencies (~11MB):
 - `questionary` + `prompt_toolkit` - Interactive menus
 - `tqdm` - Progress bars
 - `requests` + `urllib3` - HTTP client
+- `platformdirs` - Cross-platform config paths
 - Plus all sub-dependencies
 
 **No need to install Python packages!** Just run the script.
@@ -371,8 +374,16 @@ Internet-Archive-CLI-Bulk-Upload-Script/
 
 ### User Data (Not in Repository)
 
-These files are created in `~/.config/internetarchive/` during use:
+These files are created in your system's config directory during use:
 
+**Config Directory Location:**
+| OS | Path |
+|----|------|
+| **Linux** | `~/.config/internetarchive/` |
+| **macOS** | `~/Library/Application Support/internetarchive/` |
+| **Windows** | `C:\Users\<user>\AppData\Local\Internet Archive Bulk Upload\` |
+
+**Files Created:**
 | File | Purpose | In Git? |
 |------|---------|---------|
 | `identifiers.json` | Saved identifier → path mappings | ❌ No (user-specific) |
