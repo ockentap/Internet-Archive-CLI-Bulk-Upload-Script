@@ -18,6 +18,7 @@ import sqlite3
 import sys
 import signal
 import time
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -315,6 +316,75 @@ def validate_identifier(identifier: str) -> Tuple[bool, str, Optional[str]]:
         return False, f"Identifier contains invalid characters", suggested
     
     return False, f"Identifier format is invalid (use only letters, numbers, underscores, dots, hyphens)", suggested
+
+
+def validate_path(path: str) -> Tuple[bool, str, Optional[Path]]:
+    """
+    Validate a directory path.
+    
+    Returns: (is_valid, error_message, resolved_path)
+    """
+    if not path:
+        return False, "Path cannot be empty", None
+    
+    try:
+        # Expand user and resolve to absolute path
+        p = Path(path).expanduser().resolve()
+    except Exception as e:
+        return False, f"Invalid path format: {e}", None
+    
+    # Check if path exists
+    if not p.exists():
+        return False, f"Path does not exist: {path}", p
+    
+    # Check if it's a directory
+    if not p.is_dir():
+        return False, f"Path is not a directory: {path}", p
+    
+    # Check if readable
+    if not os.access(p, os.R_OK):
+        return False, f"Directory is not readable: {path}", p
+    
+    # Check for path traversal attempts
+    path_str = str(p)
+    if '..' in path and not path_str.startswith('/..'):
+        # Allow legitimate .. at start (like /../home) but warn on suspicious usage
+        pass  # We'll allow it since resolve() handles it safely
+    
+    return True, "", p
+
+
+def validate_directory_interactive(directory: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """
+    Validate directory in interactive mode.
+    Shows user-friendly error messages and suggestions.
+    
+    Returns: (is_valid, path_or_none)
+    """
+    if not directory:
+        return False, None
+    
+    is_valid, error_msg, resolved_path = validate_path(directory)
+    
+    if is_valid:
+        return True, str(resolved_path)
+    
+    # Show user-friendly error
+    print(f"\n❌ {error_msg}")
+    
+    # Make suggestions based on error
+    if "does not exist" in error_msg:
+        # Try to find similar paths
+        p = Path(directory).expanduser()
+        parent = p.parent
+        if parent.exists():
+            similar = [d.name for d in parent.iterdir() if d.is_dir() and d.name.startswith(p.name)]
+            if similar:
+                print(f"   💡 Did you mean one of these?")
+                for s in similar[:5]:
+                    print(f"      • {parent / s}")
+    
+    return False, None
 
 
 def calc_md5(filepath: Path) -> Optional[str]:
@@ -747,15 +817,15 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
     """Main upload and verification process."""
     global quit_flag
 
-    local_dir = Path(local_directory).expanduser().resolve()
-
-    # Validate directory
-    if not local_dir.exists():
-        print(f"❌ Directory does not exist: {local_dir}")
+    # Validate directory path
+    is_valid, error_msg, local_dir = validate_path(local_directory)
+    if not is_valid:
+        print(f"❌ {error_msg}")
         return False
-
-    if not local_dir.is_dir():
-        print(f"❌ Path is not a directory: {local_dir}")
+    
+    # Additional readability check
+    if not os.access(local_dir, os.R_OK):
+        print(f"❌ Directory is not readable: {local_dir}")
         return False
 
     if quit_flag:
@@ -1123,8 +1193,24 @@ def main():
         if len(sys.argv) >= 3:
             identifier = sys.argv[1]
             local_directory = sys.argv[2]
+            
+            # Validate identifier
+            is_valid, error_msg, suggested = validate_identifier(identifier)
+            if not is_valid:
+                print(f"❌ Invalid identifier: {error_msg}")
+                if suggested:
+                    print(f"   💡 Did you mean: {suggested}?")
+                return False
+            
+            # Validate directory path
+            is_valid, error_msg, resolved_path = validate_path(local_directory)
+            if not is_valid:
+                print(f"❌ {error_msg}")
+                return False
+            
             print(f"✅ Using identifier: {identifier}")
-            print(f"✅ Using directory: {local_directory}")
+            print(f"✅ Using directory: {resolved_path}")
+            local_directory = str(resolved_path)
         else:
             # Interactive mode
             identifiers = load_identifiers()

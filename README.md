@@ -36,6 +36,7 @@ That's it! The script includes everything needed:
 - 🔤 **Identifier validation** - auto-suggests valid identifiers
 - 🔄 **Force upload option** - re-upload files when needed
 - 📝 **Metadata management** - add title, description, tags, etc.
+- 🛡️ **Path validation** - validates directories before upload
 
 ### 🔧 Core Features
 - Automates the bulk upload process
