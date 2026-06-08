@@ -27,10 +27,14 @@ from typing import Dict, List, Optional, Tuple, Any
 # ─────────────────────────────────────────────────────────────────────────────
 # Add the 'vendor' directory to Python path for bundled dependencies
 # This allows running the script without virtual environments or system installs
-SCRIPT_DIR = Path(__file__).parent.resolve()
+SCRIPT_DIR = Path(os.path.abspath(__file__)).parent
 VENDOR_DIR = SCRIPT_DIR / "vendor"
 if VENDOR_DIR.exists():
     sys.path.insert(0, str(VENDOR_DIR))
+else:
+    print(f"⚠️  Vendor directory not found at: {VENDOR_DIR}")
+    print(f"   Run: pip install -r requirements.txt")
+    sys.exit(1)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Third-party Imports (from vendor or system)
