@@ -1,5 +1,7 @@
 # Internet Archive CLI Bulk-Upload Script
 
+![Internet Archive bulk-upload banner](assets/banner.png)
+
 Interactive bulk uploader for archive.org: pick a directory, the script uploads what is not on the item yet, then verifies every file by MD5.
 
 ## Requirements
@@ -16,6 +18,8 @@ python3 bulk-upload.py                       # interactive: pick identifier + di
 python3 bulk-upload.py my-item /path/files   # start from a given identifier/directory
 python3 bulk-upload.py my-item /path --yes   # no prompts (cron, unattended)
 ```
+
+![Terminal output](assets/terminal.png)
 
 State lives next to the `ia` CLI config in `~/.config/internetarchive/`: `identifiers.json`, `metadata.json`, `upload_log.db`.
 
