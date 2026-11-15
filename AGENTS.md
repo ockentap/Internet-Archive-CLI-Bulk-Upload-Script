@@ -61,9 +61,31 @@ When the user is at the keyboard, let them answer the prompts; use `--yes` only 
 
 Report the item URL (`https://archive.org/details/<identifier>`), how many files uploaded and how many were skipped, the verification result, and the exit code. Name any file that mismatched.
 
+## Smoke test — only on the identifier the user actually wants
+
+Never invent a throwaway identifier. An item cannot be deleted from the CLI, only from the website, so every test identifier stays behind as litter. Test against the real target instead, with one tiny file:
+
+1. Put a few bytes in a temporary directory, e.g. `smoke-test.txt`.
+2. Upload it to the identifier the user is going to use:
+   ```bash
+   python3 bulk-upload.py old-book-1220 /tmp/smoke-dir --yes; echo "exit=$?"
+   ```
+   A working setup ends with `✅ OK` and exit `0`.
+3. Delete that one file — file deletion works with the S3 keys, item deletion does not:
+   ```bash
+   ia delete old-book-1220 smoke-test.txt
+   ```
+   Deletion is queued like everything else; confirm it is gone (expect `404`) before moving on:
+   ```bash
+   curl -sL -o /dev/null -w '%{http_code}\n' https://archive.org/download/old-book-1220/smoke-test.txt
+   ```
+4. Run the real upload against the same identifier.
+
+That way the only item that exists is the one the user wanted, and it holds exactly the files they uploaded.
+
 ## If you are changing the script instead
 
 - `bulk-upload.py` is the only source file; `vendor/` is generated — never edit it by hand.
 - A PUT returns 200 before the file is listed, so anything that reads the item back must poll (`wait_for_ia_index`).
 - Keep these: force upload skips the IA sync; verification decides the exit code; `--yes` stays prompt-free; the launcher stays a `runpy` wrapper.
-- Check a change with `python3 -m py_compile bulk-upload.py` plus an offline harness that stubs `questionary` and `fetch_ia_files` (no credentials, no network). A live smoke test needs a throwaway identifier and `ia delete <id> --all` afterwards.
+- Check a change with `python3 -m py_compile bulk-upload.py` plus an offline harness that stubs `questionary` and `fetch_ia_files` (no credentials, no network).
