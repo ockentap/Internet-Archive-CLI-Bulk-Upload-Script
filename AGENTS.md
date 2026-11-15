@@ -1,75 +1,69 @@
 # AGENTS.md
 
-Guidance for coding agents working on this repository.
+Instructions for an AI agent helping someone **use** this script. If you are changing the code instead, see the last section.
 
-## What this is
+## What the user is trying to do
 
-One script — `bulk-upload.py` — that uploads a local directory to an archive.org item, tracks what is already uploaded in SQLite, and verifies MD5s afterwards. Python dependencies are committed under `vendor/`.
+Upload a directory of files to an archive.org item, without re-uploading what is already there, and with proof that every file arrived intact. One run does all of it: scan the directory, upload what is missing, wait for archive.org to index it, compare MD5s, exit non-zero if anything failed.
 
-## Ground rules
+## Before the first run
 
-- `bulk-upload.py` is the only source file. `vendor/` is generated: never edit it by hand.
-- Python 3.10+ (the vendored `requests`/`urllib3` require it).
-- Credentials and user state live in `~/.config/internetarchive/` (`ia.ini`, `identifiers.json`, `metadata.json`, `upload_log.db`). Never add any of them to the repo.
-- Never commit `__pycache__/`, `*.pyc` or compiled `*.so`. `.gitignore` covers them on purpose: a CPython-3.13-only `charset_normalizer` `.so` once made the import fail for everyone else.
+Check, in this order:
 
-## archive.org is asynchronous — this is the main source of "bugs"
+1. `python3 --version` is 3.10 or newer.
+2. Credentials exist in `~/.config/internetarchive/ia.ini`. If not, the user runs `ia configure` once — **they** type their archive.org password, never you, and never in chat.
+3. The identifier is valid: 5–101 characters, only `a-z A-Z 0-9 _ . -`, no spaces. The script offers a corrected suggestion if it is not.
+4. They understand that the upload is **public** as soon as it lands, and that the script never deletes anything afterwards.
 
-- A successful file PUT returns 200 **before** the file is listed in `item.files`. Anything that reads the item back (verification, sync) must poll; see `wait_for_ia_index()`.
-- Indexing is routinely minutes behind, and the platform answers with `Please reduce your request rate - total_tasks_queued exceeds global_limit` under load. Both are platform behaviour, not script failures — do not retry-tighten or "fix" them.
-- Do not trust the PUT status as proof of upload; verification compares size + MD5.
+`vendor/` ships with the repository, so there is nothing to install.
 
-## Invariants worth keeping
-
-- `force_upload` must skip the IA sync. The sync re-imports every remote file as `uploaded=True` and silently cancels the forced re-upload.
-- Verification returns `False` on any mismatch and `main()` exits non-zero; unattended callers depend on that.
-- Skipping is by size, verification is by MD5. Re-runs must stay resumable.
-- `create_configured_script()` writes a small launcher (`runpy` + `--yes`), never a modified copy of this source.
-- `-y/--yes` must stay prompt-free end to end.
-- Identifiers: 5–101 chars, `a-z A-Z 0-9 _ . -`, no spaces.
-
-## Checking a change
+## Running it
 
 ```bash
-python3 -m py_compile bulk-upload.py
-python3 -W error::UserWarning -c "import sys; sys.path.insert(0,'vendor'); import requests, questionary; from internetarchive import get_item; print('imports ok')"
+python3 bulk-upload.py                        # interactive: identifier, directory, options
+python3 bulk-upload.py my-item /path/files    # skip the menus, still asks about the IA sync
+python3 bulk-upload.py my-item /path --yes    # no questions at all (cron, unattended)
 ```
 
-Offline test, no credentials and no network:
+Interactive runs also offer to create a launcher (`<identifier>.py`), edit metadata, and force a re-upload.
 
-```python
-import importlib.util, pathlib, tempfile, hashlib
-spec = importlib.util.spec_from_file_location("bu", "bulk-upload.py")
-m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+When the user is at the keyboard, let them answer the prompts; use `--yes` only for unattended runs, and only after one supervised run has worked.
 
-class Ans:
-    def __init__(self, v): self.v = v
-    def ask(self): return self.v
-class Q:
-    def confirm(self, *a, **k): return Ans(True)
-    def select(self, *a, **k): return Ans(None)
-    def text(self, *a, **k): return Ans("x")
-m.questionary = Q()
+## Reading the output
 
-d = pathlib.Path(tempfile.mkdtemp()); (d / "a.bin").write_bytes(b"x" * 10)
-# Report the file as already on the item so the run skips upload and polling
-m.fetch_ia_files = lambda ident: {"a.bin": {"size": 10, "md5": hashlib.md5(b"x" * 10).hexdigest()}}
-assert m.process_upload("offline-test-item", str(d)) is True, "offline check failed"
-print("OFFLINE CHECK OK")
-```
+- `Found N files (size)` — what the local scan saw.
+- `Already on IA: N` / `To upload: M` — the resume decision. Skipping is by **size**; real verification comes at the end.
+- `[2/11] Uploading 'x.zip'` then `Upload successful` — an S3 HTTP 200. **Not** proof the file is stored yet.
+- `Waiting for IA to index N uploaded file(s)` — normal: archive.org indexes asynchronously. The script waits up to 15 minutes.
+- `✅ OK` / `❌ MISMATCH` / `❌ MISSING` per file, then a summary.
+- Exit code `0` only when every local file verified; `1` when anything failed.
 
-A live smoke test costs a real upload; use a throwaway identifier and delete the files afterwards:
+## Failure modes and what to do
 
-```bash
-ID=agent-smoke-$(date +%s)
-python3 bulk-upload.py "$ID" ./some-dir --yes; echo "exit=$?"
-ia delete "$ID" --all
-```
+- **`Cannot import name 'get_item' from 'internetarchive'`** — `vendor/` is missing or a partial download emptied it. Re-clone, or `python3 -m pip install --target=vendor questionary internetarchive tqdm`.
+- **`Please reduce your request rate - total_tasks_queued exceeds global_limit`** — archive.org is throttling globally, not the user's account. Wait and re-run; nothing is lost, the run resumes. Do not raise retries or hammer it.
+- **`MISSING` right after `Upload successful`** — index lag. Re-run; if the files appear, nothing was wrong.
+- **`MISMATCH`** — the local file differs from the remote one (edited after upload, or a truncated transfer). Re-run with the force option, or delete that file and upload it again.
+- **401 / 403 during upload** — wrong or missing credentials, or the identifier belongs to another account. The user re-runs `ia configure`; never ask for the password in chat.
+- **Interrupted with Ctrl+C** — safe. Re-running resumes from the SQLite log.
+- **`No files found in '<dir>'`** — empty, wrong, or unreadable directory. Check the path and permissions.
+- **Uploaded but the item looks empty on the website** — index lag again; confirm via `https://archive.org/metadata/<identifier>`.
 
-## Workflow
+## Things not to do
 
-Branch → PR → merge to `main`; `main` is what users download. Rebuild `vendor/` only if a dependency must change:
+- Never type the user's password or an emailed code; never accept either in chat.
+- Do not claim success from the `Upload successful` lines alone — wait for the verification summary and the exit code.
+- Do not force-upload to "fix" a mismatch before ruling out index lag.
+- Do not delete files or items unless the user asked. Item deletion is web-UI only (`My uploads → item → Delete`).
+- Metadata is collected and sent **only in interactive runs**. If the item needs a title or description, the first upload must be interactive; `--yes` and argument-only runs send none.
 
-```bash
-python3 -m pip install --target=vendor questionary internetarchive tqdm
-```
+## Wrapping up
+
+Report the item URL (`https://archive.org/details/<identifier>`), how many files uploaded and how many were skipped, the verification result, and the exit code. Name any file that mismatched.
+
+## If you are changing the script instead
+
+- `bulk-upload.py` is the only source file; `vendor/` is generated — never edit it by hand.
+- A PUT returns 200 before the file is listed, so anything that reads the item back must poll (`wait_for_ia_index`).
+- Keep these: force upload skips the IA sync; verification decides the exit code; `--yes` stays prompt-free; the launcher stays a `runpy` wrapper.
+- Check a change with `python3 -m py_compile bulk-upload.py` plus an offline harness that stubs `questionary` and `fetch_ia_files` (no credentials, no network). A live smoke test needs a throwaway identifier and `ia delete <id> --all` afterwards.
