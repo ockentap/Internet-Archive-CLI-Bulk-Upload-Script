@@ -27,10 +27,14 @@ from typing import Dict, List, Optional, Tuple, Any
 # ─────────────────────────────────────────────────────────────────────────────
 # Add the 'vendor' directory to Python path for bundled dependencies
 # This allows running the script without virtual environments or system installs
-SCRIPT_DIR = Path(__file__).parent.resolve()
+SCRIPT_DIR = Path(os.path.abspath(__file__)).parent
 VENDOR_DIR = SCRIPT_DIR / "vendor"
 if VENDOR_DIR.exists():
     sys.path.insert(0, str(VENDOR_DIR))
+else:
+    print(f"⚠️  Vendor directory not found at: {VENDOR_DIR}")
+    print(f"   Run: pip install -r requirements.txt")
+    sys.exit(1)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Third-party Imports (from vendor or system)
@@ -835,6 +839,9 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
     # Initialize database
     create_upload_log_db()
 
+    # Load any existing log up-front; the sync block below may overwrite it
+    upload_log = load_upload_log(identifier)
+
     # Handle force upload - clear existing log for this identifier
     if force_upload:
         print("\n🔄 Force upload mode - clearing existing upload log...")
@@ -954,8 +961,8 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
             print(f"      ... and {len(already_uploaded) - 5} more")
 
     if not files_to_upload:
-        print("\n✅ All files are already uploaded!")
-        return True
+        print("\n✅ All files are already uploaded.")
+        return verify_upload(identifier, local_files, upload_log)
 
     print(f"\n📤 {len(files_to_upload)} files to upload")
 
@@ -1074,16 +1081,37 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
         return False
 
     # Verification
+    return verify_upload(identifier, local_files, upload_log)
+
+
+def wait_for_ia_index(identifier: str, expected: List[str],
+                      timeout: int = 900, interval: int = 20) -> Dict[str, Dict[str, Any]]:
+    """Wait until IA lists every expected file (its ingest is asynchronous)."""
+    deadline = time.time() + timeout
+    announced = False
+    while True:
+        try:
+            ia_files = fetch_ia_files(identifier)
+        except Exception:
+            ia_files = {}
+        missing = [name for name in expected if name not in ia_files]
+        if not missing or quit_flag:
+            return ia_files
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            print(f"\n⚠️  {len(missing)} file(s) still not indexed after {timeout}s")
+            return ia_files
+        if not announced:
+            print(f"\n⏳ Waiting for IA to index {len(missing)} uploaded file(s) (up to {timeout}s)...")
+            announced = True
+        time.sleep(min(interval, remaining))
+
+
+def verify_upload(identifier: str, local_files: Dict[str, Dict[str, Any]],
+                  upload_log: Dict[str, Dict[str, Any]], wait_timeout: int = 900) -> bool:
+    """Verify every local file is on IA with matching size and MD5."""
     print("\n🔍 Verifying files on IA...")
-    item = get_item(identifier)
-    ia_files = {}
-    for file in item.files:
-        if quit_flag:
-            break
-        name = file.get('name')
-        size = int(file.get('size', 0)) if file.get('size') else None
-        md5 = file.get('md5')
-        ia_files[name] = {'size': size, 'md5': md5}
+    ia_files = wait_for_ia_index(identifier, list(local_files), timeout=wait_timeout)
 
     mismatched = []
     total_files = len(local_files)
@@ -1097,19 +1125,18 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
 
         print(f"🔍 [{index}/{total_files}] {relative_path}...", end=" ")
 
-        # Get or calculate local MD5
+        # Always hash the local file: the cached hash goes stale when a file
+        # is re-encoded in place (same size, different bytes)
         log_entry = upload_log.get(relative_path, {})
-        local_md5 = log_entry.get('md5_hash')
+        local_md5 = calc_md5(filepath)
 
-        if not local_md5:
-            local_md5 = calc_md5(filepath)
-            if local_md5:
-                update_upload_log(identifier, [{
-                    'relative_path': relative_path,
-                    'size': local_size,
-                    'uploaded': log_entry.get('uploaded', False),
-                    'md5_hash': local_md5
-                }])
+        if local_md5:
+            update_upload_log(identifier, [{
+                'relative_path': relative_path,
+                'size': local_size,
+                'uploaded': log_entry.get('uploaded', False),
+                'md5_hash': local_md5
+            }])
 
         # Compare with IA
         if relative_path in ia_files:
@@ -1136,7 +1163,7 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
     else:
         print("✅ Verification complete - all files match!")
 
-    return True
+    return not mismatched
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1183,6 +1210,8 @@ def create_configured_script(identifier: str, local_directory: str):
 def main():
     """Main entry point."""
     global quit_flag
+    force_upload = False
+    metadata = {}
 
     try:
         print("\n" + "=" * 60)
@@ -1284,6 +1313,7 @@ def main():
                 print("\n⚠️  Upload process completed with issues.")
 
         print("\n👋 Goodbye!\n")
+        sys.exit(0 if success else 1)
     
     except KeyboardInterrupt:
         print("\n\n⚠️  Force exit...")

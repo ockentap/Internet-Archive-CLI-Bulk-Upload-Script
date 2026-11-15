@@ -1,0 +1,130 @@
+"""
+ia_reviews.py
+
+'ia' subcommand for listing, submitting, and deleting reviews for archive.org items.
+"""
+
+# Copyright (C) 2012-2026 Internet Archive
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+import argparse
+import sys
+
+from requests.exceptions import HTTPError
+
+
+def setup(subparsers):
+    """
+    Setup args for reviews command.
+
+    Args:
+        subparsers: subparser object passed from ia.py
+    """
+    parser = subparsers.add_parser("reviews",
+                                   aliases=["re"],
+                                   help="Submit and modify reviews for archive.org items")
+
+    # Positional arguments
+    parser.add_argument("identifier",
+                        type=str,
+                        help="Identifier of the item")
+
+    # Options
+    parser.add_argument("-d", "--delete",
+                        action="store_true",
+                        help="Delete your review")
+    parser.add_argument("-t", "--title",
+                        type=str,
+                        help="The title of your review")
+    parser.add_argument("-b", "--body",
+                        type=str,
+                        help="The body of your review")
+    parser.add_argument("-s", "--stars",
+                        type=int,
+                        help="The number of stars for your review")
+    parser.add_argument("-i", "--index",
+                        action="store_true",
+                        help="Index a review")
+    parser.add_argument("-n", "--noindex",
+                        action="store_true",
+                        help="Remove a review from the index")
+
+    # Conditional arguments that require --delete
+    delete_group = parser.add_argument_group("delete options",
+                                             ("these options are used with "
+                                              "the --delete flag"))
+    delete_group.add_argument("-u", "--username",
+                              type=str,
+                              help="Delete reviews for a specific user given USERNAME")
+    delete_group.add_argument("-S", "--screenname",
+                              type=str,
+                              help="Delete reviews for a specific user given SCREENNAME")
+    delete_group.add_argument("-I", "--itemname",
+                              type=str,
+                              help="Delete reviews for a specific user given ITEMNAME")
+
+    parser.set_defaults(func=lambda args: main(args, parser))
+
+
+def main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """
+    Main entry point for 'ia reviews'.
+    """
+    item = args.session.get_item(args.identifier)
+    if args.index:
+        r = item.index_review(username=args.username,
+                               screenname=args.screenname,
+                               itemname=args.itemname)
+        if r.json().get("success"):
+            print(f"{item.identifier} - success: review indexed", file=sys.stderr)
+            sys.exit(0)
+    elif args.noindex:
+        r = item.noindex_review(username=args.username,
+                                screenname=args.screenname,
+                                itemname=args.itemname)
+        if r.json().get("success"):
+            print(f"{item.identifier} - success: review removed from index", file=sys.stderr)
+            sys.exit(0)
+    if args.delete:
+        r = item.delete_review(username=args.username,
+                               screenname=args.screenname,
+                               itemname=args.itemname)
+    elif not args.body and not args.title:
+        try:
+            r = item.get_review()
+            print(r.text)
+            sys.exit(0)
+        except HTTPError as exc:
+            if exc.response.status_code == 404:  # type: ignore
+                sys.exit(0)
+            else:
+                raise exc
+    else:
+        if (args.title and not args.body) or (args.body and not args.title):
+            parser.error("both --title and --body must be provided")
+        r = item.review(args.title, args.body, args.stars)
+    j = r.json()
+    if j.get("success") or "no change detected" in j.get("error", "").lower():
+        task_id = j.get("value", {}).get("task_id")
+        if task_id:
+            print((f"{item.identifier} - success: "
+                   f"https://catalogd.archive.org/log/{task_id}"),
+                  file=sys.stderr)
+        else:
+            print(f"{item.identifier} - warning: no changes detected!", file=sys.stderr)
+        sys.exit(0)
+    else:
+        print(f"{item.identifier} - error: {j.get('error')}", file=sys.stderr)
+        sys.exit(1)
