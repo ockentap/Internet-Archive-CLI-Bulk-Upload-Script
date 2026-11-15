@@ -53,6 +53,11 @@ IDENTIFIERS_FILE = CONFIG_DIR / "identifiers.json"
 METADATA_FILE = CONFIG_DIR / "metadata.json"
 UPLOAD_LOG_DB = CONFIG_DIR / "upload_log.db"
 
+# Non-interactive mode, used by scripts written by create_configured_script():
+#   python bulk-upload.py <identifier> <directory> --yes
+_ARGS = [a for a in sys.argv[1:] if a not in ("-y", "--yes")]
+ASSUME_YES = len(_ARGS) != len(sys.argv) - 1
+
 # Global flag for graceful shutdown
 quit_flag = False
 
@@ -444,6 +449,31 @@ def get_local_files(directory: Path) -> Dict[str, Dict[str, Any]]:
         print(f"⚠️  Permission denied accessing {directory}: {e}")
 
     return local_files
+
+
+def sync_upload_log(identifier: str, upload_log: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Import the item's current file list from IA into the local upload log."""
+    try:
+        ia_files = fetch_ia_files(identifier)
+    except Exception as e:
+        print(f"⚠️  Could not fetch files from IA: {e}")
+        print("   Continuing with local database only...")
+        return load_upload_log(identifier)
+
+    entries = [{
+        'relative_path': name,
+        'size': details['size'] or 0,
+        'uploaded': True,
+        'md5_hash': details.get('md5')
+    } for name, details in ia_files.items() if not quit_flag]
+
+    if not entries:
+        print("ℹ️  No files found on IA for this identifier (new upload)")
+        return load_upload_log(identifier)
+
+    update_upload_log(identifier, entries)
+    print(f"✅ Synced {len(entries)} files from IA")
+    return load_upload_log(identifier)
 
 
 def fetch_ia_files(identifier: str) -> Dict[str, Dict[str, Any]]:
@@ -854,7 +884,14 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
         print("✅ Upload log cleared. All files will be re-uploaded.")
     
     # Sync with IA to get accurate file list (default: Yes)
-    if not quit_flag:
+    if force_upload:
+        # Skip the sync entirely: it would re-import every remote file as
+        # "already uploaded" and silently cancel the forced re-upload.
+        print("🔄 Force upload: skipping IA sync so every file is uploaded.")
+    elif ASSUME_YES:
+        # Non-interactive (-y / --yes): sync without asking
+        upload_log = sync_upload_log(identifier, upload_log)
+    elif not quit_flag:
         sync_with_ia = questionary.confirm(
             "📡 Sync with Internet Archive to check existing files?",
             default=True,  # Always default to Yes
@@ -862,29 +899,7 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
         ).ask()
 
         if sync_with_ia and not quit_flag:
-            try:
-                ia_files = fetch_ia_files(identifier)
-                existing_files_info = []
-                for filename, info in ia_files.items():
-                    if quit_flag:
-                        break
-                    existing_files_info.append({
-                        'relative_path': filename,
-                        'size': info['size'] or 0,
-                        'uploaded': True,
-                        'md5_hash': info.get('md5')
-                    })
-                
-                if existing_files_info:
-                    update_upload_log(identifier, existing_files_info)
-                    upload_log = load_upload_log(identifier)
-                    print(f"✅ Synced {len(existing_files_info)} files from IA")
-                else:
-                    print("ℹ️  No files found on IA for this identifier (new upload)")
-            except Exception as e:
-                print(f"⚠️  Could not fetch files from IA: {e}")
-                print("   Continuing with local database only...")
-                upload_log = load_upload_log(identifier)
+            upload_log = sync_upload_log(identifier, upload_log)
         else:
             # User skipped sync
             upload_log = load_upload_log(identifier)
@@ -1170,36 +1185,30 @@ def verify_upload(identifier: str, local_files: Dict[str, Dict[str, Any]],
 # Script Generator
 # ─────────────────────────────────────────────────────────────────────────────
 def create_configured_script(identifier: str, local_directory: str):
-    """Create a new script with pre-configured settings."""
-    script_path = Path(__file__).resolve()
-    with open(script_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
+    """Write a launcher next to this script that uploads one identifier/directory.
 
-    # Find CONFIG_PLACEHOLDER
-    placeholder_idx = None
-    for i, line in enumerate(lines):
-        if '# CONFIG_PLACEHOLDER' in line or '# Pre-configured settings' in line:
-            placeholder_idx = i
-            break
-
-    if placeholder_idx is None:
-        print("⚠️  Could not find placeholder for configuration.")
-        return
-
-    indent = "    "
-    config_lines = [
-        f"{indent}identifier = '{identifier}'\n",
-        f"{indent}local_directory = r'{local_directory}'\n",
-    ]
-
-    # Insert config after placeholder
-    lines[placeholder_idx] = lines[placeholder_idx].rstrip() + '\n'
-    for i, config_line in enumerate(config_lines):
-        lines.insert(placeholder_idx + 1 + i, config_line)
-
-    new_script_name = f"{identifier}.py"
-    with open(new_script_name, 'w', encoding='utf-8') as f:
-        f.writelines(lines)
+    The launcher only sets sys.argv and runs this file, so it can never drift
+    from the real implementation (the previous version copied the source and
+    spliced settings into it, which produced a file that did not compile).
+    """
+    script_dir = Path(os.path.abspath(__file__)).parent
+    new_script_name = script_dir / f"{identifier}.py"
+    content = (
+        "#!/usr/bin/env python3\n"
+        f'"""Pre-configured uploader for {identifier}. Generated by bulk-upload.py."""\n'
+        "import os\n"
+        "import runpy\n"
+        "import sys\n\n"
+        f"BULK = os.path.join(os.path.dirname(os.path.abspath(__file__)), \'bulk-upload.py\')\n"
+        f"sys.argv = [BULK, {identifier!r}, {local_directory!r}, \'--yes\']\n"
+        "runpy.run_path(BULK, run_name=\'__main__\')\n"
+    )
+    with open(new_script_name, "w", encoding="utf-8") as f:
+        f.write(content)
+    try:
+        os.chmod(new_script_name, 0o755)
+    except OSError:
+        pass
 
     print(f"✅ Script '{new_script_name}' created!")
 
@@ -1219,9 +1228,9 @@ def main():
         print("=" * 60)
 
         # Check for command-line arguments
-        if len(sys.argv) >= 3:
-            identifier = sys.argv[1]
-            local_directory = sys.argv[2]
+        if len(_ARGS) >= 2:
+            identifier = _ARGS[0]
+            local_directory = _ARGS[1]
             
             # Validate identifier
             is_valid, error_msg, suggested = validate_identifier(identifier)
