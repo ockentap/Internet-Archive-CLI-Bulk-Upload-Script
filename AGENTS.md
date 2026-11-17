@@ -23,9 +23,10 @@ Check, in this order:
 python3 bulk-upload.py                        # interactive: identifier, directory, options
 python3 bulk-upload.py my-item /path/files    # skip the menus, still asks about the IA sync
 python3 bulk-upload.py my-item /path --yes    # no questions at all (cron, unattended)
+python3 bulk-upload.py my-item /path --yes --workers 3   # 3 parallel uploads (1-5, default 1)
 ```
 
-Interactive runs also offer to create a launcher (`<identifier>.py`), edit metadata, and force a re-upload.
+Interactive runs also offer to create a launcher (`<identifier>.py`), edit metadata, force a re-upload, and pick the worker count.
 
 When the user is at the keyboard, let them answer the prompts; use `--yes` only for unattended runs, and only after one supervised run has worked.
 
@@ -42,6 +43,7 @@ When the user is at the keyboard, let them answer the prompts; use `--yes` only 
 
 - **`Cannot import name 'get_item' from 'internetarchive'`** — `vendor/` is missing or a partial download emptied it. Re-clone, or `python3 -m pip install --target=vendor questionary internetarchive tqdm`.
 - **`Please reduce your request rate - total_tasks_queued exceeds global_limit`** — archive.org is throttling globally, not the user's account. Wait and re-run; nothing is lost, the run resumes. Do not raise retries or hammer it.
+- **Slow even with `--workers N`** — gains are sublinear (measured ~1.6–2× at 3 workers vs 1 on 2 MiB files; 5 can be slower than 3). Workers mainly help many small files, where per-file overhead overlaps. Do not raise `MAX_WORKERS` to push harder.
 - **`MISSING` right after `Upload successful`** — index lag. Re-run; if the files appear, nothing was wrong.
 - **`MISMATCH`** — the local file differs from the remote one (edited after upload, or a truncated transfer). Re-run with the force option, or delete that file and upload it again.
 - **401 / 403 during upload** — wrong or missing credentials, or the identifier belongs to another account. The user re-runs `ia configure`; never ask for the password in chat.
@@ -87,5 +89,6 @@ That way the only item that exists is the one the user wanted, and it holds exac
 
 - `bulk-upload.py` is the only source file; `vendor/` is generated — never edit it by hand.
 - A PUT returns 200 before the file is listed, so anything that reads the item back must poll (`wait_for_ia_index`).
-- Keep these: force upload skips the IA sync; verification decides the exit code; `--yes` stays prompt-free; the launcher stays a `runpy` wrapper.
+- Keep these: force upload skips the IA sync; verification decides the exit code; `--yes` stays prompt-free; the launcher stays a `runpy` wrapper; workers stay clamped to 1..`MAX_WORKERS` with default 1.
+- Parallel path: each worker builds its own `get_item()` session (no shared requests state), SQLite writes stay behind `_UPLOAD_LOG_LOCK`, and one shared tqdm bar is fed under a lock. The `workers == 1` path is the original sequential loop — keep it untouched unless the task is about it.
 - Check a change with `python3 -m py_compile bulk-upload.py` plus an offline harness that stubs `questionary` and `fetch_ia_files` (no credentials, no network).

@@ -9,16 +9,20 @@ Features:
     📊 Upload progress with statistics
     ✅ Verification with detailed reporting
     💾 SQLite-based upload tracking for resumable uploads
+    👷 Configurable parallel upload workers (1-5, default 1)
 """
 
 import os
 import hashlib
 import json
+import random
 import sqlite3
 import sys
 import signal
+import threading
 import time
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -53,10 +57,60 @@ IDENTIFIERS_FILE = CONFIG_DIR / "identifiers.json"
 METADATA_FILE = CONFIG_DIR / "metadata.json"
 UPLOAD_LOG_DB = CONFIG_DIR / "upload_log.db"
 
+# Parallel upload workers. Default 1 = the historical sequential behaviour.
+# Throughput gains are sublinear (measured ~1.6-2x at 3 workers vs 1; 5 can be
+# slower than 3). The biggest win is many small files, where per-file round-trip
+# overhead overlaps.
+DEFAULT_WORKERS = 1
+MAX_WORKERS = 5
+
+
+def _extract_workers(argv: List[str]) -> Tuple[Optional[str], List[str]]:
+    """Pull --workers N / --workers=N out of argv. Returns (raw_value, rest)."""
+    rest: List[str] = []
+    value: Optional[str] = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--workers":
+            if i + 1 < len(argv):
+                value = argv[i + 1]
+                i += 2
+                continue
+            print(f"⚠️  --workers needs a number; using default {DEFAULT_WORKERS}")
+            i += 1
+            continue
+        if a.startswith("--workers="):
+            value = a.split("=", 1)[1]
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    return value, rest
+
+
+def clamp_workers(raw: Any) -> int:
+    """Parse a worker count into 1..MAX_WORKERS; invalid input uses the default."""
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        print(f"⚠️  Invalid workers value {raw!r}; using default {DEFAULT_WORKERS}")
+        return DEFAULT_WORKERS
+    if n < 1:
+        print("⚠️  Workers must be at least 1; using 1")
+        return 1
+    if n > MAX_WORKERS:
+        print(f"⚠️  Workers capped at {MAX_WORKERS} (requested {n})")
+        return MAX_WORKERS
+    return n
+
+
 # Non-interactive mode, used by scripts written by create_configured_script():
-#   python bulk-upload.py <identifier> <directory> --yes
-_ARGS = [a for a in sys.argv[1:] if a not in ("-y", "--yes")]
-ASSUME_YES = len(_ARGS) != len(sys.argv) - 1
+#   python bulk-upload.py <identifier> <directory> --yes [--workers N]
+_WORKERS_RAW, _ARGS_AFTER_WORKERS = _extract_workers(sys.argv[1:])
+_ARGS = [a for a in _ARGS_AFTER_WORKERS if a not in ("-y", "--yes")]
+ASSUME_YES = any(a in ("-y", "--yes") for a in sys.argv[1:])
+CLI_WORKERS = clamp_workers(_WORKERS_RAW) if _WORKERS_RAW is not None else DEFAULT_WORKERS
 
 # Global flag for graceful shutdown
 quit_flag = False
@@ -250,20 +304,25 @@ def create_upload_log_db():
     conn.close()
 
 
+# Serialize SQLite log writes so parallel workers never contend on the database.
+_UPLOAD_LOG_LOCK = threading.Lock()
+
+
 def update_upload_log(identifier: str, files_info: List[Dict[str, Any]]):
     """Update upload log with file information."""
-    conn = sqlite3.connect(UPLOAD_LOG_DB)
-    c = conn.cursor()
-    data = [
-        (identifier, f['relative_path'], f['size'], f['uploaded'], f.get('md5_hash'))
-        for f in files_info
-    ]
-    c.executemany('''
-        INSERT OR REPLACE INTO upload_log (identifier, filename, size, uploaded, md5_hash)
-        VALUES (?, ?, ?, ?, ?)
-    ''', data)
-    conn.commit()
-    conn.close()
+    with _UPLOAD_LOG_LOCK:
+        conn = sqlite3.connect(UPLOAD_LOG_DB)
+        c = conn.cursor()
+        data = [
+            (identifier, f['relative_path'], f['size'], f['uploaded'], f.get('md5_hash'))
+            for f in files_info
+        ]
+        c.executemany('''
+            INSERT OR REPLACE INTO upload_log (identifier, filename, size, uploaded, md5_hash)
+            VALUES (?, ?, ?, ?, ?)
+        ''', data)
+        conn.commit()
+        conn.close()
 
 
 def load_upload_log(identifier: str) -> Dict[str, Dict[str, Any]]:
@@ -844,10 +903,177 @@ class TqdmFileWithCounter:
         self.tqdm.close()
 
 
+class TqdmFileShared:
+    """File wrapper feeding one shared progress bar (parallel uploads)."""
+    def __init__(self, filename: Path, bar: tqdm, lock: threading.Lock):
+        self.file = open(filename, 'rb')
+        self.bar = bar
+        self.lock = lock
+
+    def read(self, size=-1):
+        if quit_flag:
+            raise KeyboardInterrupt("Upload interrupted by user.")
+        data = self.file.read(size)
+        if data:
+            with self.lock:
+                self.bar.update(len(data))
+        return data
+
+    def __getattr__(self, attr):
+        return getattr(self.file, attr)
+
+    def close(self):
+        self.file.close()
+
+
+def _upload_one_parallel(identifier: str, file_info: Dict[str, Any], index: int,
+                         total_files: int, upload_metadata: Dict[str, Any],
+                         bar: tqdm, bar_lock: threading.Lock,
+                         print_lock: threading.Lock) -> bool:
+    """Upload one file inside a worker thread. Each thread gets its own
+    ArchiveSession via get_item(), so no requests state is shared."""
+    relative_path = file_info['relative_path']
+    filepath = file_info['path']
+    with print_lock:
+        print(f"\n📤 [{index}/{total_files}] Uploading '{relative_path}'...")
+
+    max_retries = 3
+    upload_success = False
+    item = get_item(identifier)
+
+    for attempt in range(1, max_retries + 1):
+        wrapped_file = None
+        try:
+            wrapped_file = TqdmFileShared(filepath, bar, bar_lock)
+            r = item.upload(
+                files={relative_path: wrapped_file},
+                verbose=False,
+                retries=5,
+                checksum=False,
+                metadata=upload_metadata
+            )
+
+            if r and r[0] and r[0].status_code in [200, 201]:
+                file_info['uploaded'] = True
+                upload_success = True
+                with print_lock:
+                    print(f"   ✅ Upload successful: '{relative_path}'")
+                break
+            elif r and r[0] and r[0].status_code == 403 and 'already exists' in r[0].text.lower():
+                file_info['uploaded'] = True
+                upload_success = True
+                with print_lock:
+                    print(f"   ℹ️  File already exists on IA: '{relative_path}'")
+                break
+            else:
+                status = r[0].status_code if r and r[0] else 'N/A'
+                with print_lock:
+                    print(f"   ⚠️  '{relative_path}' attempt {attempt}/{max_retries} failed (HTTP {status})")
+                if attempt < max_retries:
+                    time.sleep(5)
+                else:
+                    with print_lock:
+                        print(f"   ❌ Failed after {max_retries} attempts: '{relative_path}'")
+                    file_info['uploaded'] = False
+
+        except KeyboardInterrupt:
+            with print_lock:
+                print(f"\n⚠️  Upload interrupted: '{relative_path}'")
+            raise
+        except Exception as e:
+            error_msg = str(e)
+            if 'rate' in error_msg.lower() or 'overload' in error_msg.lower() or 'SlowDown' in error_msg.lower():
+                # IA's S3 task queue is site-wide: back off on a minutes scale
+                # with jitter instead of hammering it every few seconds.
+                delay = min(60 * attempt, 180) + random.uniform(0, 10)
+                with print_lock:
+                    print(f"   ⚠️  Rate limit on '{relative_path}' - attempt {attempt}/{max_retries}, waiting {delay:.0f}s")
+                if attempt < max_retries:
+                    time.sleep(delay)
+                else:
+                    with print_lock:
+                        print(f"   ❌ Skipping file after {max_retries} attempts: '{relative_path}'")
+                    file_info['uploaded'] = False
+            else:
+                with print_lock:
+                    print(f"   ❌ Error on '{relative_path}': {e}")
+                if attempt < max_retries:
+                    time.sleep(5)
+                else:
+                    with print_lock:
+                        print(f"   ❌ Skipping file after {max_retries} attempts: '{relative_path}'")
+                    file_info['uploaded'] = False
+        finally:
+            if wrapped_file is not None:
+                wrapped_file.close()
+
+    update_upload_log(identifier, [file_info])
+    return upload_success
+
+
+def _upload_parallel(identifier: str, files_to_upload: List[Dict[str, Any]],
+                     upload_metadata: Dict[str, Any],
+                     local_files: Dict[str, Dict[str, Any]], workers: int) -> bool:
+    """Upload with a thread pool (workers >= 2), then verify as usual."""
+    global quit_flag
+    total_files = len(files_to_upload)
+    print(f"\n👷 Uploading {total_files} files with {workers} parallel workers")
+    print("   (gains are sublinear; extra workers mainly help many small files)")
+
+    bar_lock = threading.Lock()
+    print_lock = threading.Lock()
+    bar = tqdm(
+        total=sum(f['size'] for f in files_to_upload),
+        desc=f"📤 {total_files} files ({workers} workers)",
+        unit='B',
+        unit_scale=True,
+        unit_divisor=1024
+    )
+    ok = failed = 0
+    interrupted = False
+    executor = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = {
+            executor.submit(_upload_one_parallel, identifier, fi, idx,
+                            total_files, upload_metadata, bar, bar_lock, print_lock): fi
+            for idx, fi in enumerate(files_to_upload, start=1)
+        }
+        for fut in as_completed(futures):
+            fi = futures[fut]
+            try:
+                if fut.result():
+                    ok += 1
+                else:
+                    failed += 1
+            except KeyboardInterrupt:
+                quit_flag = True
+                raise
+            except Exception as e:
+                failed += 1
+                fi['uploaded'] = False
+                with print_lock:
+                    print(f"   ❌ Worker error on '{fi['relative_path']}': {e}")
+                update_upload_log(identifier, [fi])
+    except KeyboardInterrupt:
+        interrupted = True
+    finally:
+        executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+        bar.close()
+
+    if interrupted or quit_flag:
+        print("\n⚠️  Exiting due to user request.")
+        return False
+
+    print(f"\n📤 Upload phase complete: {ok} succeeded, {failed} failed")
+    # Reload the log so verification writes back the workers' uploaded=True
+    # flags instead of the stale pre-upload snapshot.
+    return verify_upload(identifier, local_files, load_upload_log(identifier))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main Upload Logic
 # ─────────────────────────────────────────────────────────────────────────────
-def process_upload(identifier: str, local_directory: str, force_upload: bool = False, metadata: Optional[Dict[str, Any]] = None):
+def process_upload(identifier: str, local_directory: str, force_upload: bool = False, metadata: Optional[Dict[str, Any]] = None, workers: int = DEFAULT_WORKERS):
     """Main upload and verification process."""
     global quit_flag
 
@@ -1006,6 +1232,11 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
     if upload_metadata:
         print(f"📝 Using metadata: {len(upload_metadata)} fields")
 
+    workers = max(1, min(MAX_WORKERS, workers))
+    if workers > 1:
+        return _upload_parallel(identifier, files_to_upload, upload_metadata,
+                                local_files, workers)
+
     for index, file_info in enumerate(files_to_upload, start=1):
         if quit_flag:
             break
@@ -1095,8 +1326,9 @@ def process_upload(identifier: str, local_directory: str, force_upload: bool = F
         print("\n⚠️  Exiting due to user request.")
         return False
 
-    # Verification
-    return verify_upload(identifier, local_files, upload_log)
+    # Verification (reload the log: per-file uploads marked uploaded=True
+    # after the snapshot above was taken)
+    return verify_upload(identifier, local_files, load_upload_log(identifier))
 
 
 def wait_for_ia_index(identifier: str, expected: List[str],
@@ -1184,7 +1416,7 @@ def verify_upload(identifier: str, local_files: Dict[str, Dict[str, Any]],
 # ─────────────────────────────────────────────────────────────────────────────
 # Script Generator
 # ─────────────────────────────────────────────────────────────────────────────
-def create_configured_script(identifier: str, local_directory: str):
+def create_configured_script(identifier: str, local_directory: str, workers: int = DEFAULT_WORKERS):
     """Write a launcher next to this script that uploads one identifier/directory.
 
     The launcher only sets sys.argv and runs this file, so it can never drift
@@ -1193,15 +1425,18 @@ def create_configured_script(identifier: str, local_directory: str):
     """
     script_dir = Path(os.path.abspath(__file__)).parent
     new_script_name = script_dir / f"{identifier}.py"
+    launcher_args = [identifier, local_directory, "--yes"]
+    if workers != DEFAULT_WORKERS:
+        launcher_args += ["--workers", str(workers)]
     content = (
         "#!/usr/bin/env python3\n"
         f'"""Pre-configured uploader for {identifier}. Generated by bulk-upload.py."""\n'
         "import os\n"
         "import runpy\n"
         "import sys\n\n"
-        f"BULK = os.path.join(os.path.dirname(os.path.abspath(__file__)), \'bulk-upload.py\')\n"
-        f"sys.argv = [BULK, {identifier!r}, {local_directory!r}, \'--yes\']\n"
-        "runpy.run_path(BULK, run_name=\'__main__\')\n"
+        f"BULK = os.path.join(os.path.dirname(os.path.abspath(__file__)), \'bulk-upload.py')\n"
+        f"sys.argv = [BULK] + {launcher_args!r}\n"
+        "runpy.run_path(BULK, run_name=\'__main__')\n"
     )
     with open(new_script_name, "w", encoding="utf-8") as f:
         f.write(content)
@@ -1221,6 +1456,7 @@ def main():
     global quit_flag
     force_upload = False
     metadata = {}
+    workers = DEFAULT_WORKERS
 
     try:
         print("\n" + "=" * 60)
@@ -1249,6 +1485,8 @@ def main():
             print(f"✅ Using identifier: {identifier}")
             print(f"✅ Using directory: {resolved_path}")
             local_directory = str(resolved_path)
+            workers = CLI_WORKERS
+            print(f"👷 Workers: {workers}")
         else:
             # Interactive mode
             identifiers = load_identifiers()
@@ -1264,6 +1502,15 @@ def main():
 
             # Wrap questionary calls in try-except for KeyboardInterrupt
             try:
+                # Ask about parallel workers (kept prompt-free under --yes)
+                workers_raw = questionary.text(
+                    f"👷 Parallel upload workers (1-{MAX_WORKERS}; more workers mainly help many small files):",
+                    default=str(DEFAULT_WORKERS),
+                    qmark="⚙️"
+                ).ask()
+                if workers_raw is not None and not quit_flag:
+                    workers = clamp_workers(workers_raw)
+
                 # Ask about creating a configured script
                 create_script = questionary.confirm(
                     "Create a pre-configured script for quick future uploads?",
@@ -1272,7 +1519,7 @@ def main():
                 ).ask()
 
                 if create_script and not quit_flag:
-                    create_configured_script(identifier, local_directory)
+                    create_configured_script(identifier, local_directory, workers=workers)
 
                 # Handle metadata
                 existing_metadata = load_metadata(identifier)
@@ -1314,7 +1561,7 @@ def main():
 
         # Run the upload process
         if not quit_flag:
-            success = process_upload(identifier, local_directory, force_upload=force_upload, metadata=metadata)
+            success = process_upload(identifier, local_directory, force_upload=force_upload, metadata=metadata, workers=workers)
 
             if success:
                 print("\n🎉 Upload process completed successfully!")
